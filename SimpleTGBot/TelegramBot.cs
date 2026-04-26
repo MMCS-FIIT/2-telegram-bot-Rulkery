@@ -1,6 +1,6 @@
 ﻿using System.Reflection.Metadata.Ecma335;
-using static System.Console;
 using System.Text.RegularExpressions;
+using static System.Console;
 
 namespace SimpleTGBot;
 using Telegram.Bot;
@@ -8,6 +8,7 @@ using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 
 public class TelegramBot
 {
@@ -35,7 +36,8 @@ public class TelegramBot
         // Будем получать только сообщения. При желании можно поработать с другими событиями.
         ReceiverOptions receiverOptions = new ReceiverOptions()
         {
-            AllowedUpdates = new[] { UpdateType.Message }
+            AllowedUpdates = new[] { UpdateType.Message, UpdateType.CallbackQuery }
+
         };
 
         // Привязываем все обработчики и начинаем принимать сообщения для бота
@@ -69,9 +71,9 @@ public class TelegramBot
         string fileName = $"{chatId}.txt";
         if (System.IO.File.Exists(fileName))
         {
-            var replyKeyboard = new Telegram.Bot.Types.ReplyMarkups.ReplyKeyboardMarkup(new[]{new [] {
-            new Telegram.Bot.Types.ReplyMarkups.KeyboardButton("Посадить"),
-            new Telegram.Bot.Types.ReplyMarkups.KeyboardButton("Статус")}})
+            var replyKeyboard = new ReplyKeyboardMarkup(new[]{new [] {
+            new KeyboardButton("Посадить"),
+            new KeyboardButton("Статус")}})
             { ResizeKeyboard = true };
 
             var farmName = (await System.IO.File.ReadAllTextAsync(fileName)).Split(';')[0];
@@ -80,7 +82,7 @@ public class TelegramBot
         }
         else
         {
-            var removeKeyboard = new Telegram.Bot.Types.ReplyMarkups.ReplyKeyboardRemove();
+            var removeKeyboard = new ReplyKeyboardRemove();
             string welcomeText = "Добро пожаловать!\n\nЧтобы начать, дай своей ферме имя.\n\nНапиши сообщение в формате:\n<b>Моя ферма: Название</b>";
             await botClient.SendTextMessageAsync(chatId, welcomeText, parseMode: ParseMode.Html, replyMarkup: removeKeyboard, cancellationToken: ct);
         }
@@ -94,15 +96,55 @@ public class TelegramBot
     /// <param name="cancellationToken">Служебный токен для работы с многопоточностью</param>
     async Task OnMessageReceived(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
     {
-        var message = update.Message;
-        if (message is null) return;
+        if (update.Type == UpdateType.CallbackQuery)
+        {
+            var callbackQuery = update.CallbackQuery;
+            if (callbackQuery.Message is null) return;
 
-        var chatId = message.Chat.Id;
-        string fileName = $"{chatId}.txt";
-        string sessionFile = $"{chatId}.session";
+            var chatId = callbackQuery.Message.Chat.Id;
+            var data = callbackQuery.Data;
+
+            if (data != null && data.StartsWith("plant_"))
+            {
+                string chosenPlant = data.Replace("plant_", "");
+                string fileName = $"{chatId}.txt";
+
+                if (System.IO.File.Exists(fileName))
+                {
+                    string fileContent = await System.IO.File.ReadAllTextAsync(fileName);
+                    string[] parts = fileContent.Split(';');
+
+                    string myPlant = parts[1];
+                    int count = int.Parse(parts[2]);
+
+                    if (chosenPlant != myPlant || count <= 0)
+                    {
+                        await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, $"У тебя нет семян вида {chosenPlant}!", showAlert: true);
+                        return;
+                    }
+
+                    if (count > 0)
+                    {
+                        count--;
+                        await System.IO.File.WriteAllTextAsync(fileName, $"{parts[0]};{myPlant};{count}");
+
+                        await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, $"Посажено: {chosenPlant}!");
+                        await botClient.SendTextMessageAsync(chatId, $"Ты посадил <b>{chosenPlant}</b>. Осталось семян этого вида: {count}", parseMode: ParseMode.Html);
+                    }
+                }
+            }
+            return;
+        }
+
+        var message = update.Message;
+        if (message is null || message.Text is null) return;
+
+        long currentChatId = message.Chat.Id;
+        var currentFileName = $"{currentChatId}.txt";
+        var sessionFile = $"{currentChatId}.session";
 
         string messageText = message.Text;
-        WriteLine($"Получено сообщение в чате {chatId}: '{messageText}'");
+        WriteLine($"Получено сообщение в чате {currentChatId}: '{messageText}'");
 
         string command = messageText.ToLower().Trim();
         switch (command)
@@ -110,14 +152,20 @@ public class TelegramBot
             case "/start":
                 if (!System.IO.File.Exists(sessionFile))
                     await System.IO.File.WriteAllTextAsync(sessionFile, "started");
-                await SendWelcomeMessage(botClient, chatId, cancellationToken);
+                await SendWelcomeMessage(botClient, currentChatId, cancellationToken);
                 break;
 
             default:
                 if (!System.IO.File.Exists(sessionFile))
-                    await botClient.SendTextMessageAsync(chatId, "Привет! Мы еще не знакомы. Напиши команду <b>/start</b>, чтобы начать!", parseMode: ParseMode.Html);
+                {
+                    await botClient.SendTextMessageAsync(
+                        chatId: currentChatId,
+                        text: "Привет! Мы еще не знакомы. Напиши команду <b>/start</b>, чтобы начать!",
+                        parseMode: ParseMode.Html,
+                        replyMarkup: new ReplyKeyboardRemove());
+                }
 
-                else if (!System.IO.File.Exists(fileName))
+                else if (!System.IO.File.Exists(currentFileName))
                 {
                     var farmMatch = Regex.Match(messageText, @"^Моя ферма:\s*(.+)$", RegexOptions.IgnoreCase);
 
@@ -128,30 +176,51 @@ public class TelegramBot
                         var startSeeds = $"{_farmsSeeds[r.Next(_farmsSeeds.Length)]}";
                         var startSeedsCount = 5;
 
-                        var replyKeyboard = new Telegram.Bot.Types.ReplyMarkups.ReplyKeyboardMarkup(new[]{new [] {
-                new Telegram.Bot.Types.ReplyMarkups.KeyboardButton("Посадить"),
-                new Telegram.Bot.Types.ReplyMarkups.KeyboardButton("Статус")}})
+                        var replyKeyboard = new ReplyKeyboardMarkup(new[]{new [] {
+                new KeyboardButton("Посадить"),
+                new KeyboardButton("Статус")}})
                         { ResizeKeyboard = true };
 
-                        await System.IO.File.WriteAllTextAsync(fileName, $"{farmName};{startSeeds};{startSeedsCount}");
+                        await System.IO.File.WriteAllTextAsync(currentFileName, $"{farmName};{startSeeds};{startSeedsCount}");
 
-                        await botClient.SendTextMessageAsync(chatId, $"Чудесно! Теперь твоя ферма официально называется <b>{farmName}</b>!", parseMode: ParseMode.Html);
-                        await botClient.SendTextMessageAsync(chatId, $"Бывший владелец фермы припас для тебя немного семян...");
-                        await botClient.SendTextMessageAsync(chatId, text: $"Это же {startSeeds}! Давай скорее посадим!", replyMarkup: replyKeyboard, cancellationToken: cancellationToken);
+                        await botClient.SendTextMessageAsync(currentChatId, $"Чудесно! Теперь твоя ферма официально называется <b>{farmName}</b>!", parseMode: ParseMode.Html);
+                        await botClient.SendTextMessageAsync(currentChatId, $"Бывший владелец фермы припас для тебя немного семян...");
+                        await botClient.SendTextMessageAsync(currentChatId, text: $"Это же {startSeeds}! Давай скорее посадим!", replyMarkup: replyKeyboard, cancellationToken: cancellationToken);
                     }
                     else
                         // Если сессия есть,названия нет
-                        await botClient.SendTextMessageAsync(chatId: chatId,
+                        await botClient.SendTextMessageAsync(chatId: currentChatId,
                             text: "Сначала надо назвать ферму! Напиши:\n<b>Моя ферма: Название</b>", parseMode: ParseMode.Html,
-                            replyMarkup: new Telegram.Bot.Types.ReplyMarkups.ReplyKeyboardRemove());
+                            replyMarkup: new ReplyKeyboardRemove());
                 }
+
 
                 else
                 {
-                    if (command == "привет")
-                        await botClient.SendTextMessageAsync(chatId, "Привет, фермерша!");
+                    string[] plantSynonyms = { "посадить", "да", "сажать", "давай" };
+
+                    if (plantSynonyms.Contains(command))
+                    {
+                        var inlineKeyboard = new InlineKeyboardMarkup(new[]
+                        {_farmsSeeds.Select(seed => InlineKeyboardButton.WithCallbackData(seed, $"plant_{seed}")).ToArray()});
+
+                        await botClient.SendTextMessageAsync(currentChatId,
+                            "Выбери, что именно ты хочешь посадить на грядку:",
+                            replyMarkup: inlineKeyboard);
+                    }
+                    else if (command == "статус")
+                    {
+                        string fileContent = await System.IO.File.ReadAllTextAsync(currentFileName);
+                        var parts = fileContent.Split(';');
+                        await botClient.SendTextMessageAsync(currentChatId,
+                            $"<b>Ферма:</b> {parts[0]}\n<b>Запас:</b> {parts[1]} ({parts[2]} шт.)",
+                            parseMode: ParseMode.Html);
+                    }
+
+                    else if (command == "привет")
+                        await botClient.SendTextMessageAsync(currentChatId, "Привет!");
                     else
-                        await botClient.SendTextMessageAsync(chatId, "Команда принята! Скоро здесь появятся грядки.");
+                        await botClient.SendTextMessageAsync(currentChatId, "Команда принята! Скоро здесь появятся грядки.");
                 }
                 break;
         }
