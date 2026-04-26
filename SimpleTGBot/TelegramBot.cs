@@ -304,8 +304,6 @@ public class TelegramBot
         }
     }
 
-
-
     /// <summary>
     /// Обработчик исключений, возникших при работе бота
     /// </summary>
