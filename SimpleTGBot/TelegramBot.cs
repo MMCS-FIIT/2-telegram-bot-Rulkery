@@ -1,12 +1,14 @@
-﻿using System.Reflection.Metadata.Ecma335;
-using System.Text.RegularExpressions;
-using static System.Console;
+﻿namespace SimpleTGBot;
 
-namespace SimpleTGBot;
+using System.Reflection.Metadata.Ecma335;
+using System.Text.RegularExpressions;
+using Telegram.Bot.Types;
+using static System.Console;
+using System;
+using System.IO;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
-using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 
@@ -16,6 +18,15 @@ public class TelegramBot
     private const string BotToken = "8622644979:AAHzcHAXZ2SfMjEWsOnWp6KGNHAx8ozjFus";
 
     private string[] _farmsSeeds = new[] { "Морковь", "Тыква", "Редис", "Томат", "Свекла" };
+
+    private Dictionary<string, string> _PlantImages = new Dictionary<string, string>()
+{
+    { "Морковь", "images/carrot.png" },
+    { "Тыква",   "images/pumpkin.png" },
+    { "Редис",   "images/radish.png" },
+    { "Томат",   "images/tomato.png" },
+    { "Свекла",  "images/beet.png" }
+};
 
     /// <summary>
     /// Инициализирует и обеспечивает работу бота до нажатия клавиши Esc
@@ -123,6 +134,21 @@ public class TelegramBot
                         inventory[chosenPlant]--;
                         string newInv = string.Join(",", inventory.Select(kv => $"{kv.Key}:{kv.Value}"));
                         await System.IO.File.WriteAllTextAsync(fileName, $"{parts[0]};{newInv}");
+
+                        string filePath = _PlantImages.GetValueOrDefault(chosenPlant);
+
+                        if (filePath != null && System.IO.File.Exists(filePath))
+                        {
+                            using (var stream = System.IO.File.OpenRead(filePath))
+                            {
+
+                                var photoFile = new InputFile(stream, Path.GetFileName(filePath));
+
+                                await botClient.SendPhotoAsync(
+                                    chatId: chatId,
+                                    photo: photoFile);
+                            }
+                        }
 
                         await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, $"Посажено: {chosenPlant}!");
                         await botClient.SendTextMessageAsync(chatId, $"Ты посадил <b>{chosenPlant}</b>", parseMode: ParseMode.Html);
