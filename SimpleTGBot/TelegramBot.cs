@@ -71,9 +71,9 @@ public class TelegramBot
         string fileName = $"{chatId}.txt";
         if (System.IO.File.Exists(fileName))
         {
-            var replyKeyboard = new ReplyKeyboardMarkup(new[]{new [] {
-            new KeyboardButton("Посадить"),
-            new KeyboardButton("Статус")}})
+            var replyKeyboard = new ReplyKeyboardMarkup(new[]{
+                new [] { new KeyboardButton("Посадить"), new KeyboardButton("Статус") },
+                new [] { new KeyboardButton("Купить семена") }})
             { ResizeKeyboard = true };
 
             var farmName = (await System.IO.File.ReadAllTextAsync(fileName)).Split(';')[0];
@@ -108,32 +108,67 @@ public class TelegramBot
             {
                 string chosenPlant = data.Replace("plant_", "");
                 string fileName = $"{chatId}.txt";
+                if (System.IO.File.Exists(fileName))
+                {
+                    string content = await System.IO.File.ReadAllTextAsync(fileName);
+                    var parts = content.Split(';');
+
+                    var inventory = parts[1].Split(',')
+                        .Select(x => x.Split(':'))
+                        .Where(x => x.Length == 2)
+                        .ToDictionary(x => x[0], x => int.Parse(x[1]));
+
+                    if (inventory.ContainsKey(chosenPlant) && inventory[chosenPlant] > 0)
+                    {
+                        inventory[chosenPlant]--;
+                        string newInv = string.Join(",", inventory.Select(kv => $"{kv.Key}:{kv.Value}"));
+                        await System.IO.File.WriteAllTextAsync(fileName, $"{parts[0]};{newInv}");
+
+                        await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, $"Посажено: {chosenPlant}!");
+                        await botClient.SendTextMessageAsync(chatId, $"Ты посадил <b>{chosenPlant}</b>", parseMode: ParseMode.Html);
+                    }
+                    else
+                        await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, $"У тебя нет семян {chosenPlant}!", showAlert: true);
+                }
+            }
+
+            if (data != null && data.StartsWith("buy_"))
+            {
+                string seedToBuy = data.Replace("buy_", "");
+                string fileName = $"{chatId}.txt";
 
                 if (System.IO.File.Exists(fileName))
                 {
                     string fileContent = await System.IO.File.ReadAllTextAsync(fileName);
                     string[] parts = fileContent.Split(';');
+                    string farmName = parts[0];
 
-                    string myPlant = parts[1];
-                    int count = int.Parse(parts[2]);
+                    var inventory = new Dictionary<string, int>();
 
-                    if (chosenPlant != myPlant || count <= 0)
+                    if (parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]))
                     {
-                        await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, $"У тебя нет семян вида {chosenPlant}!", showAlert: true);
-                        return;
+                        var items = parts[1].Split(',');
+                        foreach (var item in items)
+                        {
+                            var pair = item.Split(':');
+                            if (pair.Length == 2)
+                                inventory[pair[0]] = int.Parse(pair[1]);
+                        }
                     }
 
-                    if (count > 0)
-                    {
-                        count--;
-                        await System.IO.File.WriteAllTextAsync(fileName, $"{parts[0]};{myPlant};{count}");
+                    var bonusCount = 5;
+                    if (inventory.ContainsKey(seedToBuy)) inventory[seedToBuy] += bonusCount;
+                    else
+                        inventory[seedToBuy] = bonusCount;
 
-                        await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, $"Посажено: {chosenPlant}!");
-                        await botClient.SendTextMessageAsync(chatId, $"Ты посадил <b>{chosenPlant}</b>. Осталось семян этого вида: {count}", parseMode: ParseMode.Html);
-                    }
+                    string newInventoryRaw = string.Join(",", inventory.Select(kv => $"{kv.Key}:{kv.Value}"));
+                    await System.IO.File.WriteAllTextAsync(fileName, $"{farmName};{newInventoryRaw}");
+
+                    await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, $"Приобретено: {seedToBuy}!");
+                    await botClient.SendTextMessageAsync(chatId, $"Ты получил <b>{seedToBuy}</b> (+{bonusCount} шт.)", parseMode: ParseMode.Html);
                 }
+                return;
             }
-            return;
         }
 
         var message = update.Message;
@@ -142,6 +177,8 @@ public class TelegramBot
         long currentChatId = message.Chat.Id;
         var currentFileName = $"{currentChatId}.txt";
         var sessionFile = $"{currentChatId}.session";
+
+        string[] BuySynonyms = { "купить", "приобрести", "взять", "хочу", "купить семена" };
 
         string messageText = message.Text;
         WriteLine($"Получено сообщение в чате {currentChatId}: '{messageText}'");
@@ -153,6 +190,12 @@ public class TelegramBot
                 if (!System.IO.File.Exists(sessionFile))
                     await System.IO.File.WriteAllTextAsync(sessionFile, "started");
                 await SendWelcomeMessage(botClient, currentChatId, cancellationToken);
+                break;
+
+            case string s when BuySynonyms.Contains(s):
+                var shopKeyboard = new InlineKeyboardMarkup(new[]
+                { _farmsSeeds.Select(seed => InlineKeyboardButton.WithCallbackData(seed, $"buy_{seed}")).ToArray()});
+                await botClient.SendTextMessageAsync(currentChatId, "Выбери, какие семена хочешь взять (пока это бесплатно!):", replyMarkup: shopKeyboard);
                 break;
 
             default:
@@ -176,12 +219,13 @@ public class TelegramBot
                         var startSeeds = $"{_farmsSeeds[r.Next(_farmsSeeds.Length)]}";
                         var startSeedsCount = 5;
 
-                        var replyKeyboard = new ReplyKeyboardMarkup(new[]{new [] {
-                new KeyboardButton("Посадить"),
-                new KeyboardButton("Статус")}})
+                        var replyKeyboard = new ReplyKeyboardMarkup(new[]{
+                new [] { new KeyboardButton("Посадить"), new KeyboardButton("Статус") },
+                new [] { new KeyboardButton("Купить семена") }})
                         { ResizeKeyboard = true };
 
-                        await System.IO.File.WriteAllTextAsync(currentFileName, $"{farmName};{startSeeds};{startSeedsCount}");
+
+                        await System.IO.File.WriteAllTextAsync(currentFileName, $"{farmName};{startSeeds}:{startSeedsCount}");
 
                         await botClient.SendTextMessageAsync(currentChatId, $"Чудесно! Теперь твоя ферма официально называется <b>{farmName}</b>!", parseMode: ParseMode.Html);
                         await botClient.SendTextMessageAsync(currentChatId, $"Бывший владелец фермы припас для тебя немного семян...");
@@ -212,19 +256,28 @@ public class TelegramBot
                     {
                         string fileContent = await System.IO.File.ReadAllTextAsync(currentFileName);
                         var parts = fileContent.Split(';');
+                        string farmName = parts[0];
+                        string invDisplay = "Твои амбары пока пусты!";
+                        if (parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]))
+                        {
+
+                            invDisplay = parts[1].Replace(":", ": ").Replace(",", "\n");
+                        }
+
                         await botClient.SendTextMessageAsync(currentChatId,
-                            $"<b>Ферма:</b> {parts[0]}\n<b>Запас:</b> {parts[1]} ({parts[2]} шт.)",
+                            $"<b>Ферма:</b> {farmName}\n\n<b>Твой инвентарь:</b>\n{invDisplay}",
                             parseMode: ParseMode.Html);
                     }
 
                     else if (command == "привет")
                         await botClient.SendTextMessageAsync(currentChatId, "Привет!");
                     else
-                        await botClient.SendTextMessageAsync(currentChatId, "Команда принята! Скоро здесь появятся грядки.");
+                        await botClient.SendTextMessageAsync(currentChatId, "Команда принята! Но может лучше посадим что-нибудь?");
                 }
                 break;
         }
     }
+
 
 
     /// <summary>
